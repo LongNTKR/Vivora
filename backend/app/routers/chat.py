@@ -1,5 +1,6 @@
 import asyncio
 import json
+import time
 import uuid
 from typing import AsyncGenerator
 
@@ -15,8 +16,12 @@ from app.models.video_job import VideoJob
 from app.schemas.chat import ChatMessageIn, ChatMessageOut, ChatSessionOut, ChatSessionCreate
 from app.dependencies import get_anonymous_user
 from app.services.chat_agent import stream_chat, build_messages_from_history, generate_title
+from app.services.storage_local import get_url
 
 router = APIRouter()
+
+JOB_WAIT_TIMEOUT_SECONDS = 15 * 60  # 15 minutes
+JOB_WAIT_POLL_INTERVAL_SECONDS = 2
 
 
 @router.post("/sessions", response_model=ChatSessionOut)
@@ -186,6 +191,87 @@ async def _stream_and_save(
     full_text = ""
     job_id = None
     chat_failed = False
+    assistant_saved = False
+    job_watch_task: asyncio.Task | None = None
+
+    async def _save_assistant_message():
+        async with AsyncSessionLocal() as session:
+            assistant_msg = ChatMessage(
+                session_id=session_id,
+                role="assistant",
+                content=full_text,
+                metadata_={"job_id": job_id} if job_id else None,
+            )
+            session.add(assistant_msg)
+            await session.commit()
+
+    async def _watch_job_until_terminal(job_id_to_watch: str):
+        """
+        Poll DB for job status changes and push updates to the SSE queue.
+        Terminates when status is completed/failed or when timeout hits.
+        """
+        last_status: str | None = None
+        start = time.monotonic()
+        job_uuid = uuid.UUID(job_id_to_watch)
+
+        try:
+            while time.monotonic() - start < JOB_WAIT_TIMEOUT_SECONDS:
+                async with AsyncSessionLocal() as session:
+                    result = await session.execute(
+                        select(VideoJob).where(
+                            VideoJob.id == job_uuid,
+                            VideoJob.user_id == user.id,
+                        )
+                    )
+                    job = result.scalar_one_or_none()
+
+                if not job:
+                    await queue.put(
+                        {"type": "job_watch_error", "error": "Job not found", "job_id": job_id_to_watch}
+                    )
+                    return
+
+                status = job.status
+                if status != last_status:
+                    payload: dict = {
+                        "type": "job_update",
+                        "job_id": job_id_to_watch,
+                        "status": status,
+                    }
+                    if status == "failed":
+                        payload["error"] = job.error_message
+                    if status == "completed":
+                        path = job.final_video_path or job.raw_video_path
+                        if path:
+                            payload["final_url"] = get_url(path)
+
+                    await queue.put({"type": "job_watch_update", "payload": payload})
+                    last_status = status
+
+                if status in ("completed", "failed"):
+                    return
+
+                await asyncio.sleep(JOB_WAIT_POLL_INTERVAL_SECONDS)
+
+            await queue.put(
+                {
+                    "type": "job_watch_timeout",
+                    "job_id": job_id_to_watch,
+                    "error": "Timed out waiting for video generation to finish",
+                }
+            )
+        except asyncio.CancelledError:
+            pass
+        except Exception as e:
+            await queue.put(
+                {
+                    "type": "job_watch_error",
+                    "job_id": job_id_to_watch,
+                    "error": str(e),
+                }
+            )
+        finally:
+            await queue.put({"type": "job_watch_done", "job_id": job_id_to_watch})
 
     try:
         while active_tasks > 0:
@@ -201,9 +287,14 @@ async def _stream_and_save(
                     
                 if spec:
                     try:
+                        if job_id:
+                            continue
+
                         base_settings = spec.get("settings") or {}
                         if video_model:
                             base_settings["video_model"] = video_model
+                        if api_key:
+                            base_settings["api_key"] = api_key
 
                         base_audio = spec.get("audio_settings") or {}
                         if tts_model:
@@ -228,16 +319,33 @@ async def _stream_and_save(
 
                         yield f"data: {json.dumps({'type': 'job_created', 'job_id': job_id})}\n\n"
 
+                        # Keep SSE open until the job reaches a terminal status.
+                        job_watch_task = asyncio.create_task(_watch_job_until_terminal(job_id))
+                        active_tasks += 1
+
                     except Exception as e:
                         yield f"data: {json.dumps({'type': 'error', 'message': str(e)})}\n\n"
                         
             elif msg["type"] == "chat_done":
                 active_tasks -= 1
+                # Persist assistant message as soon as chat finishes (do not wait for video).
+                if full_text and not assistant_saved:
+                    try:
+                        await _save_assistant_message()
+                        assistant_saved = True
+                    except asyncio.CancelledError:
+                        raise
+                    except Exception:
+                        pass
+
+                yield f"data: {json.dumps({'type': 'chat_done'})}\n\n"
                 
             elif msg["type"] == "chat_error":
                 yield f"data: {json.dumps({'type': 'error', 'message': msg['error']})}\n\n"
                 chat_failed = True
                 active_tasks -= 1
+                if job_watch_task:
+                    job_watch_task.cancel()
                 
             elif msg["type"] == "title_result":
                 title = msg["title"]
@@ -254,9 +362,28 @@ async def _stream_and_save(
                     
             elif msg["type"] == "title_done":
                 active_tasks -= 1
+            elif msg["type"] == "job_watch_update":
+                yield f"data: {json.dumps(msg['payload'])}\n\n"
+            elif msg["type"] == "job_watch_timeout":
+                yield f"data: {json.dumps({'type': 'error', 'message': msg['error'], 'job_id': msg.get('job_id')})}\n\n"
+            elif msg["type"] == "job_watch_error":
+                yield f"data: {json.dumps({'type': 'error', 'message': msg['error'], 'job_id': msg.get('job_id')})}\n\n"
+            elif msg["type"] == "job_watch_done":
+                active_tasks -= 1
 
         if chat_failed:
             return
+
+        # Persist assistant message before emitting "done" so a subsequent history fetch
+        # is much less likely to miss it.
+        if full_text and not assistant_saved:
+            try:
+                await _save_assistant_message()
+                assistant_saved = True
+            except asyncio.CancelledError:
+                raise
+            except Exception:
+                pass
 
         yield f"data: {json.dumps({'type': 'done'})}\n\n"
 
@@ -265,11 +392,13 @@ async def _stream_and_save(
         chat_task.cancel()
         if title_task:
             title_task.cancel()
+        if job_watch_task:
+            job_watch_task.cancel()
         raise
     finally:
         # Guarantee DB save even if cancelled or errored
-        if full_text:
-            # Launch background task to avoid issues with cancelled scope
+        if full_text and not assistant_saved:
+            # Launch background task to avoid issues with cancelled scope.
             async def _save_msg_bg():
                 async with AsyncSessionLocal() as session:
                     assistant_msg = ChatMessage(
@@ -283,5 +412,5 @@ async def _stream_and_save(
                         await session.commit()
                     except Exception:
                         pass
-            
+
             asyncio.create_task(_save_msg_bg())

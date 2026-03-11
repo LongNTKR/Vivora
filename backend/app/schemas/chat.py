@@ -17,6 +17,7 @@ class ChatMessageOut(BaseModel):
     session_id: uuid.UUID
     role: str
     content: str
+    job_id: uuid.UUID | None = None
     created_at: datetime
 
     model_config = {"from_attributes": True}

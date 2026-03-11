@@ -34,3 +34,13 @@ class ChatMessage(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
 
     session = relationship("ChatSession", back_populates="messages")
+
+    @property
+    def job_id(self) -> uuid.UUID | None:
+        value = (self.metadata_ or {}).get("job_id")
+        if not value:
+            return None
+        try:
+            return uuid.UUID(str(value))
+        except Exception:
+            return None

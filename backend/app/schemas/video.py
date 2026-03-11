@@ -1,6 +1,6 @@
 import uuid
 from datetime import datetime
-from pydantic import BaseModel
+from pydantic import BaseModel, computed_field
 
 
 class VideoSettings(BaseModel):
@@ -35,5 +35,11 @@ class VideoJobOut(BaseModel):
     error_message: str | None
     created_at: datetime
     completed_at: datetime | None
+
+    @computed_field  # type: ignore[misc]
+    @property
+    def final_url(self) -> str | None:
+        path = self.final_video_path or self.raw_video_path
+        return f"/media/{path}" if path else None
 
     model_config = {"from_attributes": True}
