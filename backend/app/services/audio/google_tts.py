@@ -23,6 +23,7 @@ async def generate_voiceover_google(
     script: str,
     language_code: str | None = None,
     voice_name: str | None = None,
+    tts_model: str | None = None,
 ) -> bytes:
     """Call Google Cloud TTS and return raw MP3 bytes."""
     lang = language_code or _settings.google_tts_language_code

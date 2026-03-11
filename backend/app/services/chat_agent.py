@@ -66,13 +66,18 @@ def _extract_generation_spec(text: str) -> dict | None:
 
 async def stream_chat(
     messages: list[dict],
+    api_key: str | None = None,
+    model: str | None = None,
 ) -> AsyncGenerator[tuple[str, dict | None], None]:
     """
     Stream Gemini response tokens.
     Yields (token_text, generation_spec | None).
     generation_spec is non-None only on the final chunk when action=generate is detected.
+    Uses the provided api_key and model if given, otherwise falls back to global settings.
     """
-    client = genai.Client(api_key=settings.google_ai_api_key)
+    effective_key = (api_key or "").strip() or settings.google_ai_api_key
+    effective_model = (model or "").strip() or settings.gemini_model
+    client = genai.Client(api_key=effective_key)
 
     # Convert messages to Gemini contents format
     contents = []
@@ -83,7 +88,7 @@ async def stream_chat(
     full_text = ""
 
     response_stream = await client.aio.models.generate_content_stream(
-        model=settings.gemini_model,
+        model=effective_model,
         contents=contents,
         config=types.GenerateContentConfig(
             system_instruction=SYSTEM_PROMPT,
@@ -100,6 +105,23 @@ async def stream_chat(
     spec = _extract_generation_spec(full_text)
     if spec:
         yield "", spec
+
+
+async def generate_title(
+    user_message: str,
+    api_key: str | None = None,
+    model: str | None = None,
+) -> str:
+    """Generate a short 3-6 word title from the first user message."""
+    effective_key = (api_key or "").strip() or settings.google_ai_api_key
+    effective_model = (model or "").strip() or settings.gemini_model
+    client = genai.Client(api_key=effective_key)
+    response = await client.aio.models.generate_content(
+        model=effective_model,
+        contents=f"Generate a very short title (3-6 words, no punctuation, no quotes) for a conversation starting with: {user_message[:200]}",
+        config=types.GenerateContentConfig(max_output_tokens=20),
+    )
+    return (response.text or "").strip()[:100]
 
 
 def build_messages_from_history(history: list[dict]) -> list[dict]:

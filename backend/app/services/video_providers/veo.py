@@ -19,7 +19,7 @@ from app.services.video_providers.base import VideoProvider, ProviderResult, Pro
 
 _settings = get_settings()
 
-VEO_MODEL = "veo-2.0-flash-exp"
+DEFAULT_VEO_MODEL = "veo-2.0-flash-exp"
 
 
 class VeoProvider(VideoProvider):
@@ -35,6 +35,7 @@ class VeoProvider(VideoProvider):
         """Submit a Veo generation job. Returns operation.name as provider_job_id."""
         duration = int(settings_dict.get("duration", 5))
         aspect_ratio = settings_dict.get("aspect_ratio", "16:9")
+        effective_model = settings_dict.get("video_model") or DEFAULT_VEO_MODEL
 
         config = types.GenerateVideosConfig(
             aspect_ratio=aspect_ratio,
@@ -47,7 +48,7 @@ class VeoProvider(VideoProvider):
             image = types.Image(image_bytes=image_bytes, mime_type="image/jpeg")
             operation = await asyncio.to_thread(
                 self.client.models.generate_videos,
-                model=VEO_MODEL,
+                model=effective_model,
                 prompt=prompt,
                 image=image,
                 config=config,
@@ -55,7 +56,7 @@ class VeoProvider(VideoProvider):
         else:
             operation = await asyncio.to_thread(
                 self.client.models.generate_videos,
-                model=VEO_MODEL,
+                model=effective_model,
                 prompt=prompt,
                 config=config,
             )

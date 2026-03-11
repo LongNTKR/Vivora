@@ -6,6 +6,10 @@ from pydantic import BaseModel
 class ChatMessageIn(BaseModel):
     content: str
     session_id: uuid.UUID | None = None
+    api_key: str | None = None
+    model: str | None = None
+    video_model: str | None = None
+    tts_model: str | None = None
 
 
 class ChatMessageOut(BaseModel):

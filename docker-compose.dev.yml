@@ -1,11 +1,9 @@
-version: "3.9"
-
 # Development override — adds hot-reload, exposes ports, mounts source
 # Usage: docker-compose -f docker-compose.yml -f docker-compose.dev.yml up
 
 services:
   backend:
-    command: uvicorn app.main:app --host 0.0.0.0 --port 8000 --reload --log-level debug
+    command: sh -c "alembic upgrade head && uvicorn app.main:app --host 0.0.0.0 --port 8000 --reload --log-level debug"
     environment:
       - APP_ENV=development
     volumes:
@@ -21,11 +19,3 @@ services:
     volumes:
       - ./frontend:/app
       - /app/node_modules
-
-  postgres:
-    ports:
-      - "5432:5432"
-
-  redis:
-    ports:
-      - "6379:6379"

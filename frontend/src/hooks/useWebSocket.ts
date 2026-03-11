@@ -1,8 +1,6 @@
 import { useEffect, useRef } from 'react'
 import { useChatStore } from '@/stores/chatStore'
 
-const WS_BASE = import.meta.env.VITE_WS_BASE_URL || 'ws://localhost:8000'
-
 export function useWebSocket() {
   const updateJobStatus = useChatStore((s) => s.updateJobStatus)
   const wsRef = useRef<WebSocket | null>(null)
@@ -10,7 +8,8 @@ export function useWebSocket() {
 
   useEffect(() => {
     function connect() {
-      const ws = new WebSocket(`${WS_BASE}/api/ws/connect`)
+      const proto = window.location.protocol === 'https:' ? 'wss' : 'ws'
+      const ws = new WebSocket(`${proto}://${window.location.host}/api/ws/connect`)
       wsRef.current = ws
 
       ws.onopen = () => {
