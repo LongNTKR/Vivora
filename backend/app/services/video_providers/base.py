@@ -24,8 +24,8 @@ class VideoProvider(ABC):
         prompt: str,
         settings: dict,
         input_image_url: str | None = None,
-    ) -> str:
-        """Submit generation job. Returns provider_job_id."""
+    ) -> tuple[str, dict]:
+        """Submit generation job. Returns (provider_job_id, generation_metadata)."""
 
     @abstractmethod
     async def poll_status(self, provider_job_id: str) -> ProviderResult:

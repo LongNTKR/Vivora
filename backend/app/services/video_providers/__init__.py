@@ -6,8 +6,8 @@ PROVIDERS: dict[str, type[VideoProvider]] = {
 }
 
 
-def get_provider(name: str) -> VideoProvider:
+def get_provider(name: str, api_key: str | None = None) -> VideoProvider:
     cls = PROVIDERS.get(name)
     if not cls:
         raise ValueError(f"Unknown provider: {name}. Available: {list(PROVIDERS.keys())}")
-    return cls()
+    return cls(api_key=api_key)

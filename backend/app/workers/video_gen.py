@@ -37,14 +37,18 @@ async def _generate_video_async(task, job_id: str):
     _publish_status(str(job.user_id), job_id, "processing")
 
     try:
-        provider = get_provider(job.model_provider)
         settings_dict = job.settings or {}
-        provider_job_id = await provider.generate(
+        provider = get_provider(job.model_provider, api_key=settings_dict.get("api_key"))
+        provider_job_id, generation_metadata = await provider.generate(
             prompt=job.prompt,
             settings_dict=settings_dict,
             input_image_url=job.input_image_url,
         )
-        update_job_status(job_id, "processing", provider_job_id=provider_job_id)
+        update_job_status(
+            job_id, "processing",
+            provider_job_id=provider_job_id,
+            generation_metadata=generation_metadata,
+        )
 
         # Poll for result
         start = time.time()
@@ -96,7 +100,7 @@ async def _generate_video_async(task, job_id: str):
 
 
 async def _download_bytes(url: str) -> bytes:
-    async with httpx.AsyncClient(timeout=120) as client:
+    async with httpx.AsyncClient(timeout=120, follow_redirects=True) as client:
         resp = await client.get(url)
         resp.raise_for_status()
         return resp.content
