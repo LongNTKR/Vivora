@@ -37,6 +37,8 @@ def update_job_status(job_id: str, status: str, **kwargs) -> None:
         values["final_video_path"] = kwargs["final_video_path"]
     if "error" in kwargs:
         values["error_message"] = kwargs["error"]
+    if "generation_metadata" in kwargs:
+        values["generation_metadata"] = kwargs["generation_metadata"]
     if status == "completed":
         from datetime import datetime, timezone
         values["completed_at"] = datetime.now(timezone.utc)
