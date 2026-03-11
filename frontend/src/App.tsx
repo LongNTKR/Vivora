@@ -9,8 +9,7 @@ export default function App() {
       <Routes>
         <Route path="/" element={<Layout />}>
           <Route index element={<Navigate to="/chat" replace />} />
-          <Route path="chat" element={<ChatPage />} />
-          <Route path="chat/:sessionId" element={<ChatPage />} />
+          <Route path="chat/:sessionId?" element={<ChatPage />} />
           <Route path="library" element={<LibraryPage />} />
         </Route>
       </Routes>

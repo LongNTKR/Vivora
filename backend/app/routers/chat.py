@@ -8,7 +8,7 @@ from fastapi.responses import StreamingResponse
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select, update as sql_update
 
-from app.database import get_db
+from app.database import get_db, AsyncSessionLocal
 from app.models.user import User
 from app.models.chat import ChatSession, ChatMessage
 from app.models.video_job import VideoJob
@@ -145,86 +145,143 @@ async def _stream_and_save(
     tts_model: str | None = None,
     first_user_message: str | None = None,
 ) -> AsyncGenerator[str, None]:
-    full_text = ""
-    job_id = None
+    queue = asyncio.Queue()
 
-    # Start title generation concurrently with streaming
-    title_task = None
-    if first_user_message:
-        title_task = asyncio.ensure_future(
-            generate_title(first_user_message, api_key, model)
-        )
-
-    try:
-        async for token, spec in stream_chat(
-            build_messages_from_history(history),
-            api_key=api_key,
-            model=model,
-        ):
-            if token:
-                full_text += token
-                yield f"data: {json.dumps({'type': 'token', 'text': token})}\n\n"
-
-            if spec:
-                # Generation triggered — enqueue job
-                try:
-                    base_settings = spec.get("settings") or {}
-                    if video_model:
-                        base_settings["video_model"] = video_model
-
-                    base_audio = spec.get("audio_settings") or {}
-                    if tts_model:
-                        base_audio["tts_model"] = tts_model
-
-                    job = VideoJob(
-                        user_id=user.id,
-                        session_id=session_id,
-                        status="queued",
-                        model_provider=spec.get("model_provider", "veo"),
-                        prompt=spec["prompt"],
-                        settings=base_settings or None,
-                        audio_settings=base_audio or None,
-                    )
-                    db.add(job)
-                    await db.flush()
-                    job_id = str(job.id)
-                    await db.commit()
-
-                    # Enqueue Celery task
-                    from app.workers.video_gen import generate_video
-                    generate_video.delay(job_id)
-
-                    yield f"data: {json.dumps({'type': 'job_created', 'job_id': job_id})}\n\n"
-
-                except Exception as e:
-                    yield f"data: {json.dumps({'type': 'error', 'message': str(e)})}\n\n"
-
-    except Exception as e:
-        yield f"data: {json.dumps({'type': 'error', 'message': str(e)})}\n\n"
-        return
-
-    # Save assistant message
-    assistant_msg = ChatMessage(
-        session_id=session_id,
-        role="assistant",
-        content=full_text,
-        metadata_={"job_id": job_id} if job_id else None,
-    )
-    db.add(assistant_msg)
-    await db.commit()
-
-    # Await already-running title task (likely done by now)
-    if title_task:
+    async def chat_producer():
         try:
-            title = await title_task
-            await db.execute(
-                sql_update(ChatSession)
-                .where(ChatSession.id == session_id)
-                .values(title=title)
-            )
-            await db.commit()
-            yield f"data: {json.dumps({'type': 'title_updated', 'title': title})}\n\n"
+            async for token, spec in stream_chat(
+                build_messages_from_history(history),
+                api_key=api_key,
+                model=model,
+            ):
+                await queue.put({"type": "chat_chunk", "token": token, "spec": spec})
+            await queue.put({"type": "chat_done"})
+        except asyncio.CancelledError:
+            pass
+        except Exception as e:
+            await queue.put({"type": "chat_error", "error": str(e)})
+
+    async def title_producer():
+        try:
+            title = await generate_title(first_user_message, api_key, model)
+            await queue.put({"type": "title_result", "title": title})
+        except asyncio.CancelledError:
+            pass
         except Exception:
             pass
+        finally:
+            await queue.put({"type": "title_done"})
 
-    yield f"data: {json.dumps({'type': 'done'})}\n\n"
+    active_tasks = 0
+    
+    # Start tasks
+    chat_task = asyncio.create_task(chat_producer())
+    active_tasks += 1
+    
+    title_task = None
+    if first_user_message:
+        title_task = asyncio.create_task(title_producer())
+        active_tasks += 1
+
+    full_text = ""
+    job_id = None
+    chat_failed = False
+
+    try:
+        while active_tasks > 0:
+            msg = await queue.get()
+            
+            if msg["type"] == "chat_chunk":
+                token = msg.get("token")
+                spec = msg.get("spec")
+                
+                if token:
+                    full_text += token
+                    yield f"data: {json.dumps({'type': 'token', 'text': token})}\n\n"
+                    
+                if spec:
+                    try:
+                        base_settings = spec.get("settings") or {}
+                        if video_model:
+                            base_settings["video_model"] = video_model
+
+                        base_audio = spec.get("audio_settings") or {}
+                        if tts_model:
+                            base_audio["tts_model"] = tts_model
+
+                        job = VideoJob(
+                            user_id=user.id,
+                            session_id=session_id,
+                            status="queued",
+                            model_provider=spec.get("model_provider", "veo"),
+                            prompt=spec["prompt"],
+                            settings=base_settings or None,
+                            audio_settings=base_audio or None,
+                        )
+                        db.add(job)
+                        await db.flush()
+                        job_id = str(job.id)
+                        await db.commit()
+
+                        from app.workers.video_gen import generate_video
+                        generate_video.delay(job_id)
+
+                        yield f"data: {json.dumps({'type': 'job_created', 'job_id': job_id})}\n\n"
+
+                    except Exception as e:
+                        yield f"data: {json.dumps({'type': 'error', 'message': str(e)})}\n\n"
+                        
+            elif msg["type"] == "chat_done":
+                active_tasks -= 1
+                
+            elif msg["type"] == "chat_error":
+                yield f"data: {json.dumps({'type': 'error', 'message': msg['error']})}\n\n"
+                chat_failed = True
+                active_tasks -= 1
+                
+            elif msg["type"] == "title_result":
+                title = msg["title"]
+                try:
+                    await db.execute(
+                        sql_update(ChatSession)
+                        .where(ChatSession.id == session_id)
+                        .values(title=title)
+                    )
+                    await db.commit()
+                    yield f"data: {json.dumps({'type': 'title_updated', 'title': title})}\n\n"
+                except Exception:
+                    pass
+                    
+            elif msg["type"] == "title_done":
+                active_tasks -= 1
+
+        if chat_failed:
+            return
+
+        yield f"data: {json.dumps({'type': 'done'})}\n\n"
+
+    except asyncio.CancelledError:
+        # Client disconnected (or generator cancelled)
+        chat_task.cancel()
+        if title_task:
+            title_task.cancel()
+        raise
+    finally:
+        # Guarantee DB save even if cancelled or errored
+        if full_text:
+            # Launch background task to avoid issues with cancelled scope
+            async def _save_msg_bg():
+                async with AsyncSessionLocal() as session:
+                    assistant_msg = ChatMessage(
+                        session_id=session_id,
+                        role="assistant",
+                        content=full_text,
+                        metadata_={"job_id": job_id} if job_id else None,
+                    )
+                    session.add(assistant_msg)
+                    try:
+                        await session.commit()
+                    except Exception:
+                        pass
+            
+            asyncio.create_task(_save_msg_bg())

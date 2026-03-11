@@ -6,16 +6,20 @@ interface ChatState {
   currentSessionId: string | null
   setCurrentSession: (id: string | null) => void
 
-  // Messages for current session
-  messages: ChatMessage[]
-  addMessage: (msg: ChatMessage) => void
-  appendToLastAssistant: (text: string) => void
-  setMessages: (msgs: ChatMessage[]) => void
-  clearMessages: () => void
+  // Messages per session: Record<sessionId, messages>
+  sessions: Record<string, ChatMessage[]>
+  addMessage: (sessionId: string, msg: ChatMessage) => void
+  setMessages: (sessionId: string, msgs: ChatMessage[]) => void
+  clearMessages: (sessionId: string) => void
 
-  // In-progress streaming
-  isStreaming: boolean
-  setStreaming: (v: boolean) => void
+  // In-progress streaming per session
+  isStreaming: Record<string, boolean>
+  setStreaming: (sessionId: string, v: boolean) => void
+  streamingTexts: Record<string, string>
+  setStreamingText: (sessionId: string, text: string) => void
+  appendStreamingText: (sessionId: string, text: string) => void
+  abortControllers: Record<string, () => void>
+  setAbortController: (sessionId: string, abort: (() => void) | null) => void
 
   // Active jobs (current session)
   activeJobs: Record<string, VideoJob>
@@ -23,26 +27,59 @@ interface ChatState {
   updateJobStatus: (jobId: string, status: string, extra?: Partial<VideoJob>) => void
 }
 
-export const useChatStore = create<ChatState>((set, get) => ({
+export const useChatStore = create<ChatState>((set) => ({
   currentSessionId: null,
   setCurrentSession: (id) => set({ currentSessionId: id }),
 
-  messages: [],
-  addMessage: (msg) => set((s) => ({ messages: [...s.messages, msg] })),
-  appendToLastAssistant: (text) =>
-    set((s) => {
-      const msgs = [...s.messages]
-      const last = msgs[msgs.length - 1]
-      if (last && last.role === 'assistant') {
-        msgs[msgs.length - 1] = { ...last, content: last.content + text }
-      }
-      return { messages: msgs }
-    }),
-  setMessages: (msgs) => set({ messages: msgs }),
-  clearMessages: () => set({ messages: [] }),
+  sessions: {},
+  addMessage: (sessionId, msg) =>
+    set((s) => ({
+      sessions: {
+        ...s.sessions,
+        [sessionId]: [...(s.sessions[sessionId] || []), msg],
+      },
+    })),
+  setMessages: (sessionId, msgs) =>
+    set((s) => ({
+      sessions: {
+        ...s.sessions,
+        [sessionId]: msgs,
+      },
+    })),
+  clearMessages: (sessionId) =>
+    set((s) => ({
+      sessions: {
+        ...s.sessions,
+        [sessionId]: [],
+      },
+    })),
 
-  isStreaming: false,
-  setStreaming: (v) => set({ isStreaming: v }),
+  isStreaming: {},
+  setStreaming: (sessionId, v) =>
+    set((s) => ({ isStreaming: { ...s.isStreaming, [sessionId]: v } })),
+  
+  streamingTexts: {},
+  setStreamingText: (sessionId, text) =>
+    set((s) => ({ streamingTexts: { ...s.streamingTexts, [sessionId]: text } })),
+  appendStreamingText: (sessionId, text) =>
+    set((s) => ({
+      streamingTexts: {
+        ...s.streamingTexts,
+        [sessionId]: (s.streamingTexts[sessionId] || '') + text,
+      },
+    })),
+
+  abortControllers: {},
+  setAbortController: (sessionId, abort) =>
+    set((s) => {
+      const newControllers = { ...s.abortControllers }
+      if (abort) {
+        newControllers[sessionId] = abort
+      } else {
+        delete newControllers[sessionId]
+      }
+      return { abortControllers: newControllers }
+    }),
 
   activeJobs: {},
   upsertJob: (job) =>

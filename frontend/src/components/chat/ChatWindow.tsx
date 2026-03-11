@@ -14,7 +14,7 @@ export default function ChatWindow({ messages, isStreaming, streamingContent }: 
   const bottomRef = useRef<HTMLDivElement>(null)
 
   useEffect(() => {
-    bottomRef.current?.scrollIntoView({ behavior: 'smooth' })
+    bottomRef.current?.scrollIntoView({ behavior: 'auto' })
   }, [messages, streamingContent])
 
   if (messages.length === 0 && !isStreaming) {

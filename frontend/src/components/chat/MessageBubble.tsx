@@ -1,13 +1,16 @@
+import { memo } from 'react'
 import { cn } from '@/lib/utils'
 import type { ChatMessage } from '@/types'
 import GenerationCard from './GenerationCard'
 import { Bot, User } from 'lucide-react'
+import ReactMarkdown from 'react-markdown'
+import remarkGfm from 'remark-gfm'
 
 interface Props {
   message: ChatMessage
 }
 
-export default function MessageBubble({ message }: Props) {
+const MessageBubble = memo(function MessageBubble({ message }: Props) {
   const isUser = message.role === 'user'
 
   return (
@@ -32,7 +35,7 @@ export default function MessageBubble({ message }: Props) {
               : 'bg-muted text-foreground rounded-tl-sm',
           )}
         >
-          <MessageContent content={message.content} />
+          <MessageContent content={message.content} isUser={isUser} />
         </div>
 
         {/* Generation card if job was triggered */}
@@ -40,10 +43,26 @@ export default function MessageBubble({ message }: Props) {
       </div>
     </div>
   )
-}
+})
 
-function MessageContent({ content }: { content: string }) {
+export default MessageBubble
+
+function MessageContent({ content, isUser }: { content: string, isUser: boolean }) {
   // Strip JSON generation spec from displayed content
   const cleaned = content.replace(/```json[\s\S]*?```/g, '').trim()
-  return <p className="whitespace-pre-wrap">{cleaned || content}</p>
+  const displayContent = cleaned || content;
+
+  return (
+    <div className={cn(
+      "prose prose-sm max-w-none break-words",
+      isUser 
+        ? "prose-invert" // Usually primary bg is dark, but let's just force text color
+        : "dark:prose-invert",
+      isUser && "[&_*]:text-primary-foreground" // Force inherit color for user bubble text
+    )}>
+      <ReactMarkdown remarkPlugins={[remarkGfm]}>
+        {displayContent}
+      </ReactMarkdown>
+    </div>
+  )
 }
