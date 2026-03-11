@@ -12,9 +12,21 @@ interface Props {
 
 export default function ChatWindow({ messages, isStreaming, streamingContent }: Props) {
   const bottomRef = useRef<HTMLDivElement>(null)
+  const scrollRafRef = useRef<number | null>(null)
 
   useEffect(() => {
-    bottomRef.current?.scrollIntoView({ behavior: 'auto' })
+    if (scrollRafRef.current !== null) {
+      cancelAnimationFrame(scrollRafRef.current)
+    }
+    scrollRafRef.current = requestAnimationFrame(() => {
+      bottomRef.current?.scrollIntoView({ behavior: 'auto' })
+    })
+    return () => {
+      if (scrollRafRef.current !== null) {
+        cancelAnimationFrame(scrollRafRef.current)
+        scrollRafRef.current = null
+      }
+    }
   }, [messages, streamingContent])
 
   if (messages.length === 0 && !isStreaming) {

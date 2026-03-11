@@ -1,4 +1,4 @@
-import { useState, useEffect, useRef, useCallback, useMemo } from 'react'
+import { useState, useEffect, useRef, useCallback } from 'react'
 import { useParams, useNavigate } from 'react-router-dom'
 import { Send, Loader2 } from 'lucide-react'
 import { Button } from '@/components/ui/button'
@@ -9,30 +9,38 @@ import { chatApi, createChatStream } from '@/lib/api'
 import { useQueryClient, type InfiniteData } from '@tanstack/react-query'
 import type { ChatSession, ChatMessage } from '@/types'
 
+const EMPTY_MESSAGES: ChatMessage[] = []
+
 export default function ChatPage() {
   const { sessionId } = useParams()
   const navigate = useNavigate()
   const qc = useQueryClient()
 
-  const {
-    sessions,
-    addMessage,
-    setCurrentSession,
-    setMessages,
-    isStreaming,
-    setStreaming,
-    streamingTexts,
-    setStreamingText,
-    appendStreamingText,
-    setAbortController,
-    upsertJob,
-  } = useChatStore()
+  // Subscribe to only the active session slice to avoid re-renders from other sessions' streams.
+  const messages = useChatStore(
+    useCallback((s) => (sessionId ? s.sessions[sessionId] ?? EMPTY_MESSAGES : EMPTY_MESSAGES), [sessionId]),
+  )
+  const activeStreaming = useChatStore(
+    useCallback((s) => (sessionId ? s.isStreaming[sessionId] ?? false : false), [sessionId]),
+  )
+  const activeWaitingVideo = useChatStore(
+    useCallback((s) => (sessionId ? s.isWaitingVideo[sessionId] ?? false : false), [sessionId]),
+  )
+  const activeStreamingText = useChatStore(
+    useCallback((s) => (sessionId ? s.streamingTexts[sessionId] ?? '' : ''), [sessionId]),
+  )
+  const isBusy = activeStreaming || activeWaitingVideo
 
-  const activeStreaming = sessionId ? isStreaming[sessionId] || false : false
-  const activeStreamingText = sessionId ? streamingTexts[sessionId] || '' : ''
-
-  // Get messages for current session from store
-  const messages = useMemo(() => (sessionId ? sessions[sessionId] || [] : []), [sessionId, sessions])
+  const addMessage = useChatStore((s) => s.addMessage)
+  const setCurrentSession = useChatStore((s) => s.setCurrentSession)
+  const setMessages = useChatStore((s) => s.setMessages)
+  const setStreaming = useChatStore((s) => s.setStreaming)
+  const setStreamingText = useChatStore((s) => s.setStreamingText)
+  const appendStreamingText = useChatStore((s) => s.appendStreamingText)
+  const setAbortController = useChatStore((s) => s.setAbortController)
+  const upsertJob = useChatStore((s) => s.upsertJob)
+  const updateJobStatus = useChatStore((s) => s.updateJobStatus)
+  const setWaitingVideo = useChatStore((s) => s.setWaitingVideo)
 
   const [input, setInput] = useState('')
   const skipNextFetchRef = useRef(false)
@@ -41,15 +49,33 @@ export default function ChatPage() {
   useEffect(() => {
     if (sessionId) {
       setCurrentSession(sessionId)
-      
-      // Fetch if not present
-      const currentSessions = useChatStore.getState().sessions
-      if (!currentSessions[sessionId] && !skipNextFetchRef.current) {
-        chatApi.getMessages(sessionId).then(({ data }: { data: ChatMessage[] }) => {
-          setMessages(sessionId, data)
-        })
-      }
+
+      const shouldSkipFetch = skipNextFetchRef.current
       skipNextFetchRef.current = false
+
+      // Fetch only if we truly have no local state yet.
+      const existing = useChatStore.getState().sessions[sessionId]
+      if (!shouldSkipFetch && (!existing || existing.length === 0)) {
+        let cancelled = false
+        chatApi
+          .getMessages(sessionId)
+          .then(({ data }: { data: ChatMessage[] }) => {
+            if (cancelled) return
+
+            // Avoid clobbering optimistic messages if user started chatting while fetch was in-flight.
+            const latest = useChatStore.getState().sessions[sessionId]
+            if (latest && latest.length > 0) return
+
+            setMessages(sessionId, data)
+          })
+          .catch((err) => {
+            if (!cancelled) console.error('Failed to fetch messages', err)
+          })
+
+        return () => {
+          cancelled = true
+        }
+      }
     } else {
       setCurrentSession(null)
     }
@@ -59,7 +85,7 @@ export default function ChatPage() {
 
   const handleSend = useCallback(async () => {
     const trimmedInput = input.trim()
-    if (!trimmedInput || activeStreaming) return
+    if (!trimmedInput || isBusy) return
 
     let activeSessionId = sessionId
     if (!activeSessionId) {
@@ -96,18 +122,37 @@ export default function ChatPage() {
 
     setStreaming(capturedSessionId, true)
     setStreamingText(capturedSessionId, '')
+    setWaitingVideo(capturedSessionId, false)
 
     let accumulatorText = ''
+    let pendingText = ''
+    let flushTimeoutId: number | null = null
+    let latestJobId: string | null = null
+    let assistantCommitted = false
+
+    const flushPending = () => {
+      if (pendingText) {
+        appendStreamingText(capturedSessionId, pendingText)
+        pendingText = ''
+      }
+      flushTimeoutId = null
+    }
 
     const streamAbort = createChatStream(
       capturedSessionId,
       content,
       (text) => {
         accumulatorText += text
-        // Update global store directly; React will batch and throttle correctly in Zustand
-        appendStreamingText(capturedSessionId, text)
+        pendingText += text
+
+        // Batch updates to keep the UI responsive (especially with multiple concurrent sessions).
+        if (flushTimeoutId === null) {
+          flushTimeoutId = window.setTimeout(flushPending, 50)
+        }
       },
       (jobId) => {
+        latestJobId = jobId
+        setWaitingVideo(capturedSessionId, true)
         upsertJob({
           id: jobId,
           status: 'queued',
@@ -123,23 +168,39 @@ export default function ChatPage() {
         })
       },
       () => {
-        // Done — commit accumulated text as assistant message
+        // Done — server finished streaming + (if any) video generation wait
+        if (flushTimeoutId !== null) {
+          clearTimeout(flushTimeoutId)
+          flushTimeoutId = null
+        }
+        flushPending()
+
         setStreaming(capturedSessionId, false)
         setStreamingText(capturedSessionId, '')
+        setWaitingVideo(capturedSessionId, false)
         setAbortController(capturedSessionId, null)
-        
-        if (accumulatorText) {
+
+        if (accumulatorText && !assistantCommitted) {
+          assistantCommitted = true
           addMessage(capturedSessionId, {
             id: `local-a-${Date.now()}`,
             role: 'assistant',
             content: accumulatorText,
             created_at: new Date().toISOString(),
+            ...(latestJobId ? { jobId: latestJobId } : {}),
           })
         }
       },
       (err) => {
+        if (flushTimeoutId !== null) {
+          clearTimeout(flushTimeoutId)
+          flushTimeoutId = null
+        }
+        flushPending()
+
         setStreaming(capturedSessionId, false)
         setStreamingText(capturedSessionId, '')
+        setWaitingVideo(capturedSessionId, false)
         setAbortController(capturedSessionId, null)
         
         addMessage(capturedSessionId, {
@@ -160,10 +221,41 @@ export default function ChatPage() {
           }
         })
       },
+      () => {
+        // Chat done — commit accumulated assistant text, then keep waiting for video updates if needed.
+        if (flushTimeoutId !== null) {
+          clearTimeout(flushTimeoutId)
+          flushTimeoutId = null
+        }
+        flushPending()
+
+        setStreaming(capturedSessionId, false)
+        setStreamingText(capturedSessionId, '')
+
+        if (accumulatorText && !assistantCommitted) {
+          assistantCommitted = true
+          addMessage(capturedSessionId, {
+            id: `local-a-${Date.now()}`,
+            role: 'assistant',
+            content: accumulatorText,
+            created_at: new Date().toISOString(),
+            ...(latestJobId ? { jobId: latestJobId } : {}),
+          })
+        }
+      },
+      (jobId, status, extra) => {
+        updateJobStatus(jobId, status, {
+          ...(extra?.error ? { error_message: extra.error } : {}),
+          ...(extra?.final_url ? { final_url: extra.final_url } : {}),
+        })
+        if (status === 'completed' || status === 'failed') {
+          setWaitingVideo(capturedSessionId, false)
+        }
+      },
     )
     
     setAbortController(capturedSessionId, streamAbort)
-  }, [input, activeStreaming, sessionId, addMessage, setStreaming, setStreamingText, appendStreamingText, setAbortController, upsertJob, qc, navigate])
+  }, [input, isBusy, sessionId, addMessage, setStreaming, setStreamingText, appendStreamingText, setAbortController, upsertJob, updateJobStatus, setWaitingVideo, qc, navigate])
 
   const handleKeyDown = (e: React.KeyboardEvent) => {
     if (e.key === 'Enter' && !e.shiftKey) {
@@ -190,15 +282,15 @@ export default function ChatPage() {
               placeholder="Describe the video you want to create..."
               className="min-h-[44px] max-h-32 flex-1 resize-none border-0 bg-transparent p-2 focus-visible:ring-0 focus-visible:ring-offset-0"
               rows={1}
-              disabled={activeStreaming}
+              disabled={isBusy}
             />
             <Button
               size="icon"
               onClick={handleSend}
-              disabled={!input.trim() || activeStreaming}
+              disabled={!input.trim() || isBusy}
               className="h-9 w-9 shrink-0"
             >
-              {activeStreaming ? (
+              {isBusy ? (
                 <Loader2 className="h-4 w-4 animate-spin" />
               ) : (
                 <Send className="h-4 w-4" />

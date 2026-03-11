@@ -1,9 +1,9 @@
 import { useEffect } from 'react'
 import { useQuery } from '@tanstack/react-query'
-import { cn, JOB_STATUS_LABELS, JOB_STATUS_COLORS } from '@/lib/utils'
+import { cn, JOB_STATUS_LABELS, getVideoUrl } from '@/lib/utils'
 import { useChatStore } from '@/stores/chatStore'
-import { jobsApi, videosApi } from '@/lib/api'
-import { Loader2, CheckCircle2, XCircle, Play } from 'lucide-react'
+import { jobsApi } from '@/lib/api'
+import { Loader2, CheckCircle2, XCircle, Play, Download } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import { Badge } from '@/components/ui/badge'
 
@@ -39,14 +39,8 @@ export default function GenerationCard({ jobId }: Props) {
   const isFailed = status === 'failed'
   const isInProgress = POLL_STATUSES.includes(status)
 
-  const handleWatch = async () => {
-    try {
-      const { data: urlData } = await videosApi.getUrl(jobId)
-      window.open(urlData.url, '_blank')
-    } catch {
-      // ignore
-    }
-  }
+  const effectiveJob = job ?? data ?? null
+  const finalUrl = effectiveJob ? getVideoUrl(effectiveJob) : null
 
   return (
     <div className="rounded-xl border bg-card p-4 space-y-3 w-72">
@@ -75,11 +69,20 @@ export default function GenerationCard({ jobId }: Props) {
         />
       </div>
 
-      {isCompleted && (
-        <Button size="sm" className="w-full" onClick={handleWatch}>
-          <Play className="h-4 w-4" />
-          Watch Video
-        </Button>
+      {isCompleted && finalUrl && (
+        <div className="flex gap-2">
+          <Button size="sm" className="flex-1" asChild>
+            <a href={finalUrl} target="_blank" rel="noopener noreferrer">
+              <Play className="h-4 w-4" />
+              Watch
+            </a>
+          </Button>
+          <Button size="sm" variant="outline" asChild>
+            <a href={finalUrl} download={`vivora-${jobId.slice(0, 8)}.mp4`}>
+              <Download className="h-4 w-4" />
+            </a>
+          </Button>
+        </div>
       )}
 
       {isFailed && job?.error_message && (

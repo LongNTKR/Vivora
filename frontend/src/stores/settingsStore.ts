@@ -10,6 +10,8 @@ export const CHAT_MODELS = [
 export const VIDEO_MODELS = [
     { value: 'veo-3.1-generate-preview', label: 'Veo 3.1 Generate Preview' },
     { value: 'veo-3.1-fast-generate-preview', label: 'Veo 3.1 Fast Generate Preview' },
+    { value: 'veo-3.0-generate-001', label: 'Veo 3.0 Generate 001' },
+    { value: 'veo-3.0-fast-generate-001', label: 'Veo 3.0 Fast Generate 001' },
 ]
 
 export const NANO_BANANA_MODELS = [
@@ -68,12 +70,21 @@ export const useSettingsStore = create<SettingsState>()(
         }),
         {
             name: 'vivora-settings',
-            version: 2,
+            version: 3,
             migrate: (persisted: unknown, version: number) => {
                 const state = persisted as Record<string, unknown>
                 if (version < 2 && state.model) {
                     state.chatModel = state.model
                     delete state.model
+                }
+                // v3: reset stale/invalid videoModel value
+                const validVideoModels = new Set([
+                    'veo-3.1-generate-preview',
+                    'veo-3-generate-preview',
+                    'veo-2-generate-preview',
+                ])
+                if (!validVideoModels.has(state.videoModel as string)) {
+                    state.videoModel = 'veo-3.1-generate-preview'
                 }
                 return state as unknown as SettingsState
             },

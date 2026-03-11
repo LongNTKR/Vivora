@@ -1,6 +1,6 @@
 import { useRef, useCallback, useEffect } from 'react'
 import { NavLink, useNavigate, useParams } from 'react-router-dom'
-import { Zap, Plus, Video, Settings2 } from 'lucide-react'
+import { Zap, Plus, Video } from 'lucide-react'
 import { useInfiniteQuery } from '@tanstack/react-query'
 import { cn } from '@/lib/utils'
 import { chatApi } from '@/lib/api'

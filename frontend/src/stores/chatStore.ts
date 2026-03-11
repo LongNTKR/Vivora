@@ -20,6 +20,10 @@ interface ChatState {
   appendStreamingText: (sessionId: string, text: string) => void
   abortControllers: Record<string, () => void>
   setAbortController: (sessionId: string, abort: (() => void) | null) => void
+  
+  // Video generation waiting state per session
+  isWaitingVideo: Record<string, boolean>
+  setWaitingVideo: (sessionId: string, v: boolean) => void
 
   // Active jobs (current session)
   activeJobs: Record<string, VideoJob>
@@ -80,6 +84,10 @@ export const useChatStore = create<ChatState>((set) => ({
       }
       return { abortControllers: newControllers }
     }),
+
+  isWaitingVideo: {},
+  setWaitingVideo: (sessionId, v) =>
+    set((s) => ({ isWaitingVideo: { ...s.isWaitingVideo, [sessionId]: v } })),
 
   activeJobs: {},
   upsertJob: (job) =>
