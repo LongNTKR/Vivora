@@ -1,4 +1,5 @@
 from celery import Celery
+from kombu import Queue
 from app.config import get_settings
 
 settings = get_settings()
@@ -14,6 +15,12 @@ celery_app = Celery(
 )
 
 celery_app.conf.update(
+    task_default_queue="celery",
+    task_queues=(
+        Queue("celery"),
+        Queue("video"),
+        Queue("audio"),
+    ),
     task_serializer="json",
     accept_content=["json"],
     result_serializer="json",

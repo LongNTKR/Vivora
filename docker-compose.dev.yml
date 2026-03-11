@@ -10,7 +10,7 @@ services:
       - ./backend:/app
 
   worker:
-    command: celery -A app.workers.celery_app worker --loglevel=debug --concurrency=2
+    command: celery -A app.workers.celery_app worker --loglevel=debug --concurrency=2 -Q celery,video,audio
     volumes:
       - ./backend:/app
 
