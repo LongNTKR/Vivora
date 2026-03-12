@@ -70,18 +70,32 @@ export const useSettingsStore = create<SettingsState>()(
         }),
         {
             name: 'vivora-settings',
-            version: 3,
+            version: 4,
             migrate: (persisted: unknown, version: number) => {
                 const state = persisted as Record<string, unknown>
                 if (version < 2 && state.model) {
                     state.chatModel = state.model
                     delete state.model
                 }
-                // v3: reset stale/invalid videoModel value
+                // v4: normalize legacy/invalid videoModel value
+                const legacyVideoModelMap: Record<string, string> = {
+                    // Older preview ids → stable ids
+                    'veo-3-generate-preview': 'veo-3.0-generate-001',
+                    'veo-3-fast-generate-preview': 'veo-3.0-fast-generate-001',
+                    'veo-3.0-generate-preview': 'veo-3.0-generate-001',
+                    'veo-3.0-fast-generate-preview': 'veo-3.0-fast-generate-001',
+                    // Veo 2 is not offered in Vivora; fall back to default.
+                    'veo-2-generate-preview': 'veo-3.1-generate-preview',
+                }
+                const currentVideoModel = state.videoModel as string | undefined
+                if (currentVideoModel && legacyVideoModelMap[currentVideoModel]) {
+                    state.videoModel = legacyVideoModelMap[currentVideoModel]
+                }
                 const validVideoModels = new Set([
                     'veo-3.1-generate-preview',
-                    'veo-3-generate-preview',
-                    'veo-2-generate-preview',
+                    'veo-3.1-fast-generate-preview',
+                    'veo-3.0-generate-001',
+                    'veo-3.0-fast-generate-001',
                 ])
                 if (!validVideoModels.has(state.videoModel as string)) {
                     state.videoModel = 'veo-3.1-generate-preview'

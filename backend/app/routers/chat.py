@@ -7,7 +7,7 @@ from typing import AsyncGenerator
 from fastapi import APIRouter, Depends, HTTPException
 from fastapi.responses import StreamingResponse
 from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy import select, update as sql_update
+from sqlalchemy import select, update as sql_update, delete as sql_delete
 
 from app.database import get_db, AsyncSessionLocal
 from app.models.user import User
@@ -52,6 +52,36 @@ async def list_sessions(
         .limit(limit)
     )
     return result.scalars().all()
+
+
+@router.delete("/sessions/{session_id}", status_code=204)
+async def delete_session(
+    session_id: uuid.UUID,
+    current_user: User = Depends(get_anonymous_user),
+    db: AsyncSession = Depends(get_db),
+):
+    result = await db.execute(
+        select(ChatSession).where(
+            ChatSession.id == session_id,
+            ChatSession.user_id == current_user.id,
+        )
+    )
+    session = result.scalar_one_or_none()
+    if not session:
+        raise HTTPException(status_code=404, detail="Session not found")
+    await db.delete(session)
+    await db.commit()
+
+
+@router.delete("/sessions", status_code=204)
+async def delete_all_sessions(
+    current_user: User = Depends(get_anonymous_user),
+    db: AsyncSession = Depends(get_db),
+):
+    await db.execute(
+        sql_delete(ChatSession).where(ChatSession.user_id == current_user.id)
+    )
+    await db.commit()
 
 
 @router.get("/sessions/{session_id}/messages", response_model=list[ChatMessageOut])
@@ -158,6 +188,7 @@ async def _stream_and_save(
                 build_messages_from_history(history),
                 api_key=api_key,
                 model=model,
+                video_model=video_model,
             ):
                 await queue.put({"type": "chat_chunk", "token": token, "spec": spec})
             await queue.put({"type": "chat_done"})

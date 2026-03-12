@@ -12,15 +12,36 @@ from app.config import get_settings
 
 settings = get_settings()
 
-SYSTEM_PROMPT = """Bạn là Vivora AI — một assistant giúp người dùng tạo video bằng AI.
+def _build_system_prompt(video_model: str | None) -> str:
+    vm = (video_model or "").strip()
+    if vm.startswith("veo-3.0"):
+        model_context = f"Model video hiện tại: {vm} (Veo 3.0)."
+        resolution_rule = 'Resolution: 720p (mặc định) hoặc 1080p (chỉ hợp lệ với aspect_ratio="16:9"). Không hỗ trợ 4k.'
+        extra_rule = 'Nếu aspect_ratio="9:16" thì chỉ nên dùng resolution="720p".'
+    elif vm.startswith("veo-3.1"):
+        model_context = f"Model video hiện tại: {vm} (Veo 3.1)."
+        resolution_rule = 'Resolution: 720p (mặc định), 1080p, hoặc 4k (1080p/4k chỉ hợp lệ với duration=8).'
+        extra_rule = ""
+    else:
+        model_context = f"Model video hiện tại: {vm}." if vm else "Model video hiện tại: (chưa rõ)."
+        resolution_rule = (
+            'Resolution: tuỳ model; Veo 3.1 có thể dùng "4k", Veo 3.0 tối đa "1080p" '
+            '(và 1080p chỉ hợp lệ với aspect_ratio="16:9").'
+        )
+        extra_rule = ""
+
+    return f"""Bạn là Vivora AI — một assistant giúp người dùng tạo video bằng AI.
+
+{model_context}
 
 Nhiệm vụ của bạn là thu thập đầy đủ thông tin để tạo video:
 1. Mô tả video (cảnh quay, nội dung, subject, action, camera motion, style, mood, environment)
 2. Style/mood (ví dụ: cinematic, cartoon, realistic, dark, bright, peaceful...)
 3. Duration (4, 6, hoặc 8 giây — mặc định: 8)
-4. Audio preferences (có muốn voiceover không? Với Veo 3.1, âm thanh tự nhiên — dialogue, sound effects, ambient — được tạo tự động từ prompt)
+4. Audio preferences (có muốn voiceover không? Với Veo 3/3.1, âm thanh tự nhiên — dialogue, sound effects, ambient — có thể được tạo trực tiếp từ prompt)
 5. Aspect ratio: 16:9 (landscape) hoặc 9:16 (portrait)
-6. Resolution: 720p (mặc định), 1080p, hoặc 4k (chỉ hợp lệ với 8 giây)
+6. {resolution_rule}
+{extra_rule}
 
 Giao tiếp tự nhiên, thân thiện bằng ngôn ngữ của user (tiếng Việt hoặc tiếng Anh).
 Hỏi thêm khi cần làm rõ, nhưng đừng hỏi quá nhiều câu một lúc.
@@ -28,28 +49,28 @@ Hỏi thêm khi cần làm rõ, nhưng đừng hỏi quá nhiều câu một lú
 Khi đã thu thập ĐỦ thông tin (ít nhất có mô tả + duration), output một JSON block ở cuối message:
 
 ```json
-{
+{{
   "action": "generate",
-  "spec": {
+  "spec": {{
     "prompt": "detailed video description in English, include audio cues if requested",
     "model_provider": "veo",
-    "settings": {
+    "settings": {{
       "duration": 8,
       "aspect_ratio": "16:9",
       "resolution": "720p"
-    },
-    "audio_settings": {
+    }},
+    "audio_settings": {{
       "enable_voiceover": false,
       "voice_volume": 0.9
-    }
-  }
-}
+    }}
+  }}
+}}
 ```
 
 Chỉ output JSON block này khi user đã xác nhận muốn tạo video.
 Aspect ratio: "16:9" (landscape) hoặc "9:16" (portrait/vertical).
 Duration: 4, 6, hoặc 8 giây (mặc định: 8).
-Resolution: "720p" (mặc định), "1080p", "4k" — chỉ dùng được với duration=8.
+Resolution: xem rule theo model ở trên.
 """
 
 
@@ -72,6 +93,7 @@ async def stream_chat(
     messages: list[dict],
     api_key: str | None = None,
     model: str | None = None,
+    video_model: str | None = None,
 ) -> AsyncGenerator[tuple[str, dict | None], None]:
     """
     Stream Gemini response tokens.
@@ -95,7 +117,7 @@ async def stream_chat(
         model=effective_model,
         contents=contents,
         config=types.GenerateContentConfig(
-            system_instruction=SYSTEM_PROMPT,
+            system_instruction=_build_system_prompt(video_model),
             max_output_tokens=2048,
         ),
     )
